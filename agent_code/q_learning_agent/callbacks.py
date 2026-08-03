@@ -13,9 +13,10 @@ MOVE_DELTAS = {
 }
 
 N_FEATURES = 9  # 1 bias + 4 direction to nearest coin + 4 available actions
-EPSILON = 0.2  # Exploration rate for epsilon-greedy policy
 
 MODEL_FILE = Path(__file__).resolve().with_name("model.npy")
+
+EPSILON_EVAL = 0.0
 
 
 def setup(self):
@@ -61,7 +62,9 @@ def act(self, game_state: dict) -> str:
     assert features is not None, "Features should only be None if the game state is None."
     q_values = calculate_q_values(self.model, features)
 
-    if self.train and self.rng.random() < EPSILON:
+    self.epsilon = self.epsilon if self.train else EPSILON_EVAL  # Use a very low epsilon during evaluation
+
+    if self.rng.random() < self.epsilon:
         decision_type = "exploration"
         action = self.rng.choice(actions)
     else:
@@ -165,6 +168,40 @@ def direction_to_nearest_coin(game_state: dict) -> str | None:
                 queue.append(neighbor)
 
     return None
+
+
+def distance_to_nearest_coin(game_state: dict) -> int | None:
+    """Calculate the distance to the nearest coin."""
+    if game_state is None or "coins" not in game_state or not game_state["coins"]:
+        return None  # No coins available
+
+    field = game_state["field"]
+    coins = set(game_state["coins"])
+    _, _, _, (x, y) = game_state["self"]
+
+    # Use BFS to find the shortest path to any coin
+    visited = set()
+    queue = deque([(x, y, 0)])  # (current_x, current_y, distance)
+    visited.add((x, y))
+
+    while queue:
+        current_x, current_y, distance = queue.popleft()
+
+        if (current_x, current_y) in coins:
+            return distance  # Return the distance to the nearest coin
+
+        for dx, dy in MOVE_DELTAS.values():
+            next_x, next_y = current_x + dx, current_y + dy
+            if (
+                0 <= next_x < field.shape[0]
+                and 0 <= next_y < field.shape[1]
+                and field[next_x, next_y] == 0
+                and (next_x, next_y) not in visited
+            ):
+                visited.add((next_x, next_y))
+                queue.append((next_x, next_y, distance + 1))
+    
+    return None  # No path to any coin found
 
 
 def state_to_features(game_state: dict) -> np.ndarray | None:

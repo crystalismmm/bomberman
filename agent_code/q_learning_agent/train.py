@@ -1,8 +1,11 @@
 from typing import List
 import events as e
 import numpy as np
-from .callbacks import ACTIONS, MODEL_FILE, available_actions, calculate_q_values, state_to_features
+from .callbacks import ACTIONS, MODEL_FILE, available_actions, calculate_q_values, state_to_features, distance_to_nearest_coin
 
+
+MOVED_CLOSER_TO_COIN = "MOVED_CLOSER_TO_COIN"
+MOVED_AWAY_FROM_COIN = "MOVED_AWAY_FROM_COIN"
 
 REWARDS = {
     e.COIN_COLLECTED: 1.0,
@@ -11,15 +14,21 @@ REWARDS = {
     e.INVALID_ACTION: -1.0,
     e.KILLED_SELF: -5.0,
     e.GOT_KILLED: -5.0,
+    MOVED_CLOSER_TO_COIN: 0.1,
+    MOVED_AWAY_FROM_COIN: -0.2,
 }
 
-LEARNING_RATE = 0.05
+LEARNING_RATE = 0.01
 DISCOUNT_FACTOR = 0.9
+EPSILON_START = 0.2  # Exploration rate for epsilon-greedy policy
+EPSILON_MIN = 0.01  # Minimum exploration rate
+EPSILON_DECAY = 0.97  # Decay rate for exploration rate
 
 
 def setup_training(self):
     """Initialize variables that are only needed during training."""
     self.round_reward = 0.0
+    self.epsilon = EPSILON_START
 
 
 def game_events_occurred(
@@ -29,8 +38,18 @@ def game_events_occurred(
     new_game_state: dict,
     events: List[str],
 ):
-    """Record the reward produced by one transition.
-    """
+    """Record the reward produced by one transition."""
+    # If no coin is collected, check if the agent moved closer or further away from the nearest coin
+    if e.COIN_COLLECTED not in events:
+        old_distance = distance_to_nearest_coin(old_game_state)
+        new_distance = distance_to_nearest_coin(new_game_state)
+
+        if old_distance is not None and new_distance is not None:
+            if new_distance < old_distance:
+                events.append(MOVED_CLOSER_TO_COIN)
+            else:
+                events.append(MOVED_AWAY_FROM_COIN)
+
     reward = reward_from_events(events)
     self.round_reward += reward
 
@@ -59,7 +78,13 @@ def end_of_round(
     np.save(MODEL_FILE, self.model)
     self.logger.info("Saved model to %s.", MODEL_FILE)
 
-    self.logger.info(f"Round finished with training reward {self.round_reward}.")
+    self.epsilon = max(EPSILON_MIN, self.epsilon * EPSILON_DECAY) # Decay epsilon, but keep it above a minimum threshold
+
+    self.logger.info(
+        "Round finished with reward %.3f and epsilon %.4f.",
+        self.round_reward,
+        self.epsilon,
+    )
     self.round_reward = 0.0
 
 
