@@ -1,5 +1,6 @@
 import numpy as np
 from collections import deque
+from pathlib import Path
 
 
 ACTIONS = ("UP", "RIGHT", "DOWN", "LEFT", "WAIT", "BOMB")
@@ -11,27 +12,85 @@ MOVE_DELTAS = {
     "LEFT": (-1, 0),
 }
 
+N_FEATURES = 9  # 1 bias + 4 direction to nearest coin + 4 available actions
+EPSILON = 0.2  # Exploration rate for epsilon-greedy policy
+
+MODEL_FILE = Path(__file__).resolve().with_name("model.npy")
+
 
 def setup(self):
-    """Initialize objects that are needed while the agent is running."""
-    self.logger.info("Setting up q_learning_agent.")
+    """Initialize the agent and load a trained model when available."""
     self.rng = np.random.default_rng()
+
+    expected_shape = (len(ACTIONS), N_FEATURES)
+
+    if self.train:
+        self.logger.info("Starting training with a new model.")
+        self.model = np.zeros(expected_shape, dtype=np.float32)
+        return
+
+    if MODEL_FILE.is_file():
+        self.logger.info("Loading model from %s.", MODEL_FILE)
+
+        model = np.load(MODEL_FILE, allow_pickle=False)
+
+        if model.shape != expected_shape:
+            raise ValueError(
+                f"Saved model has shape {model.shape}, "
+                f"but expected {expected_shape}."
+            )
+
+        self.model = model.astype(np.float32, copy=False)
+
+    else:
+        self.logger.warning(
+            "No saved model found at %s. Using an untrained model.",
+            MODEL_FILE,
+        )
+        self.model = np.zeros(expected_shape, dtype=np.float32)
 
 
 def act(self, game_state: dict) -> str:
     """Choose an action.
 
-    For now, this is a random baseline that only chooses immediately safe,
-    executable movement actions. The Q-learning policy will replace this
-    selection in the next development step.
+    The action is chosen based on the current Q-values and an epsilon-greedy policy.
     """
-    actions = available_actions(game_state, allow_bomb=False)
-    action = self.rng.choice(actions)
-    self.logger.debug(f"Available actions: {actions}; selected: {action}")
+    actions = available_actions(game_state, allow_bomb=False, allow_wait=False)
+
+    features = state_to_features(game_state)
+    assert features is not None, "Features should only be None if the game state is None."
+    q_values = calculate_q_values(self.model, features)
+
+    if self.train and self.rng.random() < EPSILON:
+        decision_type = "exploration"
+        action = self.rng.choice(actions)
+    else:
+        decision_type = "exploitation"
+
+        # Select the action with the highest Q-value among available actions
+        # We don't consider the Q-values of the bomb action here since it's not available in this context
+        # for equal Q-values, we select a random action among the best ones
+        available_q_values = {action: q_values[idx] for idx, action in enumerate(ACTIONS) if action in actions}
+        max_q_value = max(available_q_values.values())
+        best_actions = [action for action, q in available_q_values.items() if np.isclose(q, max_q_value)]
+        action = self.rng.choice(best_actions)
+
+    self.logger.debug(
+        "Round: %s | Step: %s | Mode: %s | Features: %s | "
+        "Q-values: %s | Available: %s | Selected: %s",
+        game_state["round"],
+        game_state["step"],
+        decision_type,
+        features.tolist(),
+        np.round(q_values, 3).tolist(),
+        actions,
+        action,
+    )
+
     return str(action)
 
 
-def available_actions(game_state: dict, allow_bomb: bool = True) -> list[str]:
+def available_actions(game_state: dict, allow_bomb: bool = True, allow_wait: bool = True) -> list[str]:
     """Return actions that can be executed in the current state.
 
     Movement into a current explosion is excluded as well. Future bomb danger
@@ -52,7 +111,8 @@ def available_actions(game_state: dict, allow_bomb: bool = True) -> list[str]:
             if explosion_map[target] == 0:
                 actions.append(action)
 
-    actions.append("WAIT")
+    if allow_wait or not actions:
+        actions.append("WAIT")
 
     if allow_bomb and bombs_left:
         actions.append("BOMB")
@@ -105,3 +165,37 @@ def direction_to_nearest_coin(game_state: dict) -> str | None:
                 queue.append(neighbor)
 
     return None
+
+
+def state_to_features(game_state: dict) -> np.ndarray | None:
+    """Convert the game state to a feature vector."""
+    if game_state is None:
+        return None
+
+    # Feature vector is built as follows:
+    # - 1 feature is always 1 (bias term)
+    # - 4 features for the direction to the nearest coin (one-hot encoded)
+    # - 4 features for the available actions (one-hot encoded)
+    features = np.zeros(N_FEATURES, dtype=np.float32)
+
+    # Bias term
+    features[0] = 1.0
+
+    # Direction to nearest coin
+    direction = direction_to_nearest_coin(game_state)
+    for idx, move in enumerate(MOVE_DELTAS.keys()):
+        if move == direction:
+            features[1 + idx] = 1.0
+
+    # Available actions
+    available = available_actions(game_state)
+    for idx, move in enumerate(MOVE_DELTAS.keys()):
+        if move in available:
+            features[5 + idx] = 1.0
+
+    return features
+
+
+def calculate_q_values(model: np.ndarray, features: np.ndarray) -> np.ndarray:
+    """Calculate Q-values for all actions given the current features."""
+    return model @ features  # Matrix multiplication to get Q-values
