@@ -70,6 +70,8 @@ INPUT_MAP = {
 # LOG_AGENT_WRAPPER = logging.INFO
 # LOG_AGENT_CODE = logging.DEBUG
 # LOG_MAX_FILE_SIZE = 100 * 1024 * 1024  # 100 MB
+
+# logging levels for training and evaluation
 LOG_GAME = logging.WARNING
 LOG_AGENT_WRAPPER = logging.WARNING
 LOG_AGENT_CODE = logging.INFO
