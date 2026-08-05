@@ -61,7 +61,7 @@ def act(self, game_state: dict) -> str:
 
     The action is chosen based on the current Q-values and an epsilon-greedy policy.
     """
-    actions = available_actions(game_state, allow_bomb=True, allow_wait=False)
+    actions = available_actions(game_state, allow_bomb=True, allow_wait=True)
 
     features = state_to_features(game_state)
     assert features is not None, "Features should only be None if the game state is None."

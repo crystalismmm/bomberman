@@ -13,18 +13,19 @@ UNSAFE_BOMB_PLACEMENT = "UNSAFE_BOMB_PLACEMENT"
 
 
 REWARDS = {
-    e.COIN_COLLECTED: 1.0,
-    e.CRATE_DESTROYED: 0.3,
+    e.COIN_COLLECTED: 2.0,
+    e.CRATE_DESTROYED: 1.0,
     e.KILLED_OPPONENT: 5.0,
     e.INVALID_ACTION: -1.0,
-    e.KILLED_SELF: -5.0,
+    e.KILLED_SELF: -7.0,
     e.GOT_KILLED: -5.0,
+    e.WAITED: -0.3,
     STEP_TAKEN: -0.01,  # small negative reward for taking a step to encourage efficiency
-    MOVED_TOWARDS_BOMBING_POSITION: 0.05,  # small positive reward for moving towards a useful bombing position
-    MOVED_AWAY_FROM_BOMBING_POSITION: -0.05,  # small negative reward for moving away from a useful bombing position
-    GOOD_BOMB_PLACEMENT: 0.2,  # small positive reward for placing a bomb in a useful position
-    BAD_BOMB_PLACEMENT: -0.2,  # small negative reward for placing a bomb in a useless position
-    UNSAFE_BOMB_PLACEMENT: -1.0,
+    MOVED_TOWARDS_BOMBING_POSITION: 0.1,  # small positive reward for moving towards a useful bombing position
+    MOVED_AWAY_FROM_BOMBING_POSITION: -0.1,  # small negative reward for moving away from a useful bombing position
+    GOOD_BOMB_PLACEMENT: 1.5,  # small positive reward for placing a bomb in a useful position
+    BAD_BOMB_PLACEMENT: -0.4,  # small negative reward for placing a bomb in a useless position
+    UNSAFE_BOMB_PLACEMENT: -1.0
 }
 
 LEARNING_RATE = 0.01
@@ -164,7 +165,7 @@ def update_model(self, old_game_state: dict, action: str, new_game_state: dict |
         new_features = state_to_features(new_game_state)
         assert new_features is not None, "New features should only be None if the new game state is None."
 
-        available = available_actions(new_game_state, allow_bomb=True, allow_wait=False)
+        available = available_actions(new_game_state, allow_bomb=True, allow_wait=True)
         new_q_values = calculate_q_values(self.model, new_features)
         # Only consider Q-values of available actions
         available_q_values = [new_q_values[ACTIONS.index(a)] for a in available]

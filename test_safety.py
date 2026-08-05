@@ -9,6 +9,7 @@ from agent_code.q_learning_advanced_agent.callbacks import (
     state_to_features,
     can_escape_after_bomb,
     count_crates_in_blast,
+    distance_to_nearest_bombing_position,
 )
 
 
@@ -316,6 +317,31 @@ def test_direction_to_bombing_position():
     assert bombing_features[right_index] == 1
 
 
+def test_distance_at_bombing_position():
+    field = create_field()
+    field[7, 4] = 1
+
+    state = create_state(field, position=(4, 4))
+
+    assert distance_to_nearest_bombing_position(state) == 0
+
+
+def test_distance_to_bombing_position():
+    field = create_field()
+    field[7, 4] = 1
+
+    state = create_state(field, position=(2, 4))
+
+    assert distance_to_nearest_bombing_position(state) == 2
+
+
+def test_no_bombing_position():
+    field = create_field()
+    state = create_state(field, position=(4, 4))
+
+    assert distance_to_nearest_bombing_position(state) is None
+
+
 if __name__ == "__main__":
     test_already_safe()
     test_escape_possible()
@@ -338,5 +364,9 @@ if __name__ == "__main__":
 
     test_current_position_is_bombing_position()
     test_direction_to_bombing_position()
+
+    test_distance_at_bombing_position()
+    test_distance_at_bombing_position()
+    test_no_bombing_position()
 
     print("All advanced-agent tests passed.")
