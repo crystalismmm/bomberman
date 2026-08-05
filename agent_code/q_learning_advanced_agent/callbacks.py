@@ -11,9 +11,13 @@ MOVE_DELTAS = {
     "DOWN": (0, 1),
     "LEFT": (-1, 0),
 }
-
-N_FEATURES = 13  # 1 bias + 4 direction to nearest coin + 4 available actions + 4 directions to nearest coin cluster
+# 1 bias + 4 direction to nearest coin + 4 available actions + 4 coin potential in each direction +
+# 1 agent is in danger + 4 directions to nearest safe tile + 1 can escape after bomb + 1 number of crates in blast +
+# 4 direction to nearest useful bombing position
+N_FEATURES = 1 + 4 + 4 + 4 + 1 + 4 + 1 + 1 + 4
 COIN_DECAY = 0.8  # Decay factor for coin potential calculation
+BOMB_POWER = 3  # Radius of bomb danger area
+BOMB_TIMER = 4  # Number of turns before a bomb explodes
 
 MODEL_FILE = Path(__file__).resolve().with_name("model.npy")
 
@@ -57,7 +61,7 @@ def act(self, game_state: dict) -> str:
 
     The action is chosen based on the current Q-values and an epsilon-greedy policy.
     """
-    actions = available_actions(game_state, allow_bomb=False, allow_wait=False)
+    actions = available_actions(game_state, allow_bomb=True, allow_wait=False)
 
     features = state_to_features(game_state)
     assert features is not None, "Features should only be None if the game state is None."
@@ -208,6 +212,191 @@ def coin_potential(field: np.ndarray, start: tuple[int, int], coins: list[tuple[
     return potential
 
 
+def get_blast_tiles(field: np.ndarray, bomb_position: tuple[int, int], power: int = BOMB_POWER) -> set[tuple[int, int]]:
+    """Return all tiles affected by a bomb at the given position with the specified power."""
+    blast_tiles = {bomb_position}
+    x, y = bomb_position
+
+    for dx, dy in MOVE_DELTAS.values():
+        for step in range(1, power + 1):
+            nx, ny = x + dx * step, y + dy * step
+            if 0 <= nx < field.shape[0] and 0 <= ny < field.shape[1]:
+                if field[nx, ny] == -1:  # Wall
+                    break
+                blast_tiles.add((nx, ny))
+            else:
+                break
+
+    return blast_tiles
+
+
+def danger_time_map(game_state: dict) -> np.ndarray:
+    """Return the earliest explosion time for every tile."""
+    # Initialize the danger time map with infinity
+    danger_time = np.full(game_state["field"].shape, np.inf, dtype=np.float32)
+    
+    # Update danger times for each bomb
+    for bomb in game_state["bombs"]:
+        bomb_position, bomb_time = bomb
+        blast_tiles = get_blast_tiles(game_state["field"], bomb_position)
+        for tile in blast_tiles:
+            danger_time[tile] = min(danger_time[tile], bomb_time)
+
+    explosion_map = game_state["explosion_map"]
+    # Update danger times for tiles that are currently exploding
+    danger_time[explosion_map > 0] = 0
+
+    return danger_time
+
+def direction_to_safety(game_state: dict) -> str | None:
+    """Return the movement towards the nearest safe tile, or None if already safe."""
+    field = game_state["field"]
+    danger_map = danger_time_map(game_state)
+    _, _, _, (x, y) = game_state["self"]
+
+    bomb_positions = {
+        position for position, _ in game_state["bombs"]
+    }
+
+    other_positions = {
+        other[3] for other in game_state["others"]
+    }
+
+    blocked_positions = bomb_positions | other_positions
+
+    queue = deque([((x, y), 0, None)])  # (position, arrival_time, first_move)
+    visited = {(x, y)}
+
+    while queue:
+        current, arrival_time, first_move = queue.popleft()
+
+        if not np.isfinite(danger_map[current]):
+            return first_move
+
+        for action, (dx, dy) in MOVE_DELTAS.items():
+            neighbor = (current[0] + dx, current[1] + dy)
+
+            if (0 <= neighbor[0] < field.shape[0] and 0 <= neighbor[1] < field.shape[1]
+                and neighbor not in blocked_positions
+                and field[neighbor] == 0
+                and neighbor not in visited
+                and danger_map[neighbor] > arrival_time + 1):
+
+                visited.add(neighbor)
+                queue.append((neighbor, arrival_time + 1, first_move or action))
+
+    return None  # No safe tile found
+
+
+def can_escape_after_bomb(game_state: dict) -> bool:
+    """Check if the agent can escape after placing a bomb."""
+    _, _, bombs_left, (x, y) = game_state["self"]
+
+    if bombs_left == 0:
+        return False
+
+    # Simulate placing a bomb at the agent's current position
+    simulated_bombs = list(game_state["bombs"]) + [
+        ((x, y), BOMB_TIMER - 1)
+    ]
+    simulated_game_state = game_state.copy()
+    simulated_game_state["bombs"] = simulated_bombs
+
+    # Check if there's a safe direction to move to after placing the bomb
+    escape_direction = direction_to_safety(simulated_game_state)
+    return escape_direction is not None
+
+
+def count_crates_in_blast(field: np.ndarray, bomb_position: tuple[int, int], power: int = BOMB_POWER) -> int:
+    """Return the number of crates hit by a bomb."""
+    blast_tiles = get_blast_tiles(field, bomb_position, power)
+    return sum(1 for tile in blast_tiles if field[tile] == 1)
+
+
+def direction_to_bombing_position(game_state: dict) -> str | None:
+    """Return the first movement towards the nearest useful bombing position."""
+    field = game_state["field"]
+    _, _, _, (x, y) = game_state["self"]
+
+    # Perform BFS to find the nearest useful bombing position
+    queue = deque([((x, y), None)])
+    visited = {(x, y)}
+
+    bomb_positions = {
+        position for position, _ in game_state["bombs"]
+    }
+
+    other_positions = {
+        other[3] for other in game_state["others"]
+    }
+
+    blocked_positions = bomb_positions | other_positions
+
+    while queue:
+        current, first_move = queue.popleft()
+
+        if count_crates_in_blast(field, current) > 0:
+            return first_move
+
+        for action, (dx, dy) in MOVE_DELTAS.items():
+            neighbor = (current[0] + dx, current[1] + dy)
+
+            if (
+                0 <= neighbor[0] < field.shape[0]
+                and 0 <= neighbor[1] < field.shape[1]
+                and field[neighbor] == 0
+                and neighbor not in blocked_positions
+                and neighbor not in visited
+            ):
+                visited.add(neighbor)
+                queue.append(
+                    (neighbor, first_move or action)
+                )
+
+    return None
+
+
+def distance_to_nearest_bombing_position(game_state: dict) -> int | None:
+    """Return the distance to the nearest useful bombing position."""
+    field = game_state["field"]
+    _, _, _, (x, y) = game_state["self"]
+
+    # Perform BFS to find the nearest useful bombing position
+    queue = deque([((x, y), 0)])  # (position, distance)
+    visited = {(x, y)}
+
+    bomb_positions = {
+        position for position, _ in game_state["bombs"]
+    }
+
+    other_positions = {
+        other[3] for other in game_state["others"]
+    }
+
+    blocked_positions = bomb_positions | other_positions
+
+    while queue:
+        current, distance = queue.popleft()
+
+        if count_crates_in_blast(field, current) > 0:
+            return distance
+
+        for dx, dy in MOVE_DELTAS.values():
+            neighbor = (current[0] + dx, current[1] + dy)
+
+            if (
+                0 <= neighbor[0] < field.shape[0]
+                and 0 <= neighbor[1] < field.shape[1]
+                and field[neighbor] == 0
+                and neighbor not in blocked_positions
+                and neighbor not in visited
+            ):
+                visited.add(neighbor)
+                queue.append((neighbor, distance + 1))
+
+    return None  # No useful bombing position found
+
+
 def state_to_features(game_state: dict) -> np.ndarray | None:
     """Convert the game state to a feature vector."""
     if game_state is None:
@@ -245,6 +434,37 @@ def state_to_features(game_state: dict) -> np.ndarray | None:
     max_potential = np.max(features[9:13])
     if max_potential > 0:
         features[9:13] /= max_potential
+
+    danger_map = danger_time_map(game_state)
+    # Feature for whether the agent is in danger
+    _, _, _, (x, y) = game_state["self"]
+
+    in_danger = np.isfinite(danger_map[x, y])
+    features[13] = float(in_danger)
+
+    escape_direction = direction_to_safety(game_state)
+
+    for idx, move in enumerate(MOVE_DELTAS.keys()):
+        if move == escape_direction:
+            features[14 + idx] = 1.0
+
+    # Feature for whether the agent can escape after placing a bomb
+    can_escape = can_escape_after_bomb(game_state)
+    features[18] = float(can_escape)
+
+    # Feature for the number of crates in the blast radius
+    crate_count = count_crates_in_blast(
+        game_state["field"],
+        (x, y),
+    )
+    features[19] = crate_count / (4 * BOMB_POWER)
+
+    # Features for the direction to the nearest useful bombing position
+    bombing_direction = direction_to_bombing_position(game_state)
+
+    for idx, move in enumerate(MOVE_DELTAS.keys()):
+        if move == bombing_direction:
+            features[20 + idx] = 1.0
 
     return features
 

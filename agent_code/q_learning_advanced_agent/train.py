@@ -1,26 +1,37 @@
 from typing import List
 import events as e
 import numpy as np
-from .callbacks import ACTIONS, MODEL_FILE, available_actions, calculate_q_values, state_to_features
+from .callbacks import ACTIONS, MODEL_FILE, MOVE_DELTAS, available_actions, calculate_q_values, count_crates_in_blast, distance_to_nearest_bombing_position, state_to_features, danger_time_map, can_escape_after_bomb
 
 
 STEP_TAKEN = "STEP_TAKEN"
+MOVED_TOWARDS_BOMBING_POSITION = "MOVED_TOWARDS_BOMBING_POSITION"
+MOVED_AWAY_FROM_BOMBING_POSITION = "MOVED_AWAY_FROM_BOMBING_POSITION"
+GOOD_BOMB_PLACEMENT = "GOOD_BOMB_PLACEMENT"
+BAD_BOMB_PLACEMENT = "BAD_BOMB_PLACEMENT"
+UNSAFE_BOMB_PLACEMENT = "UNSAFE_BOMB_PLACEMENT"
+
 
 REWARDS = {
     e.COIN_COLLECTED: 1.0,
-    e.CRATE_DESTROYED: 0.2,
+    e.CRATE_DESTROYED: 0.3,
     e.KILLED_OPPONENT: 5.0,
     e.INVALID_ACTION: -1.0,
     e.KILLED_SELF: -5.0,
     e.GOT_KILLED: -5.0,
     STEP_TAKEN: -0.01,  # small negative reward for taking a step to encourage efficiency
+    MOVED_TOWARDS_BOMBING_POSITION: 0.05,  # small positive reward for moving towards a useful bombing position
+    MOVED_AWAY_FROM_BOMBING_POSITION: -0.05,  # small negative reward for moving away from a useful bombing position
+    GOOD_BOMB_PLACEMENT: 0.2,  # small positive reward for placing a bomb in a useful position
+    BAD_BOMB_PLACEMENT: -0.2,  # small negative reward for placing a bomb in a useless position
+    UNSAFE_BOMB_PLACEMENT: -1.0,
 }
 
 LEARNING_RATE = 0.01
 DISCOUNT_FACTOR = 0.9
 EPSILON_START = 0.2  # Exploration rate for epsilon-greedy policy
 EPSILON_MIN = 0.01  # Minimum exploration rate
-EPSILON_DECAY = 0.97  # Decay rate for exploration rate
+EPSILON_DECAY = 0.995  # Decay rate for exploration rate
 
 
 def setup_training(self):
@@ -37,16 +48,70 @@ def game_events_occurred(
     events: List[str],
 ):
     """Record the reward produced by one transition."""
-    events.append(STEP_TAKEN)  # Add a small negative reward for taking a step
+    events.append(STEP_TAKEN)
+
+    # Reward movement towards useful bombing positions only while safe.
+    if self_action in MOVE_DELTAS and e.CRATE_DESTROYED not in events:
+        _, _, _, old_position = old_game_state["self"]
+        _, _, _, new_position = new_game_state["self"]
+
+        old_danger_map = danger_time_map(old_game_state)
+        new_danger_map = danger_time_map(new_game_state)
+
+        old_in_danger = np.isfinite(old_danger_map[old_position])
+        new_in_danger = np.isfinite(new_danger_map[new_position])
+
+        if not old_in_danger and not new_in_danger:
+            old_distance = distance_to_nearest_bombing_position(
+                old_game_state
+            )
+            new_distance = distance_to_nearest_bombing_position(
+                new_game_state
+            )
+
+            if old_distance is not None and new_distance is not None:
+                if new_distance < old_distance:
+                    events.append(
+                        MOVED_TOWARDS_BOMBING_POSITION
+                    )
+                elif new_distance > old_distance:
+                    events.append(
+                        MOVED_AWAY_FROM_BOMBING_POSITION
+                    )
+
+    # Evaluate a bomb only if it was actually placed.
+    if e.BOMB_DROPPED in events:
+        bomb_position = old_game_state["self"][3]
+
+        if not can_escape_after_bomb(old_game_state):
+            events.append(UNSAFE_BOMB_PLACEMENT)
+        else:
+            crates_in_blast = count_crates_in_blast(
+                old_game_state["field"],
+                bomb_position,
+            )
+
+            if crates_in_blast > 0:
+                events.append(GOOD_BOMB_PLACEMENT)
+            else:
+                events.append(BAD_BOMB_PLACEMENT)
 
     reward = reward_from_events(events)
     self.round_reward += reward
 
-    # update the model based on the transition
-    update_model(self, old_game_state, self_action, new_game_state, reward)
+    update_model(
+        self,
+        old_game_state,
+        self_action,
+        new_game_state,
+        reward,
+    )
 
     self.logger.debug(
-        f"Action {self_action} produced reward {reward} from events {events}."
+        "Action %s produced reward %.3f from events %s.",
+        self_action,
+        reward,
+        events,
     )
 
 
@@ -99,7 +164,7 @@ def update_model(self, old_game_state: dict, action: str, new_game_state: dict |
         new_features = state_to_features(new_game_state)
         assert new_features is not None, "New features should only be None if the new game state is None."
 
-        available = available_actions(new_game_state, allow_bomb=False, allow_wait=False)
+        available = available_actions(new_game_state, allow_bomb=True, allow_wait=False)
         new_q_values = calculate_q_values(self.model, new_features)
         # Only consider Q-values of available actions
         available_q_values = [new_q_values[ACTIONS.index(a)] for a in available]
