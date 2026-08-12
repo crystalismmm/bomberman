@@ -2,8 +2,8 @@
 
 The state deliberately contains only categorical information.  This keeps the
 table small enough to learn while separating situations that the former linear
-model mixed together (especially GOOD/USELESS/UNSAFE bombs and different WAIT
-situations).
+model mixed together (especially ATTACK/GOOD/USELESS/UNSAFE bombs and
+different WAIT situations).
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ BOMBING_DISTANCE_DECAY = 0.85
 EPSILON_EVAL = 0.0
 RNG_SEED = 0
 
-MODEL_VERSION = 2
+MODEL_VERSION = 3
 MODEL_FILE = Path(__file__).resolve().with_name("q_table.pkl")
 
 TARGET_ESCAPE = "ESCAPE"
@@ -51,6 +51,7 @@ DIRECTION_HERE = "HERE"
 DIRECTION_NONE = "NONE"
 
 BOMB_UNAVAILABLE = "UNAVAILABLE"
+BOMB_ATTACK = "ATTACK"
 BOMB_GOOD_LOW = "GOOD_LOW"
 BOMB_GOOD_HIGH = "GOOD_HIGH"
 BOMB_USELESS = "USELESS"
@@ -77,7 +78,7 @@ class StateAnalysis:
 def setup(self):
     """Initialize history and either create or load the Q-table."""
     self.rng = np.random.default_rng(RNG_SEED)
-    self.q_table: dict[StateKey, np.ndarray] = {} # type: ignore
+    self.q_table: dict[StateKey, np.ndarray] = {}
 
     self.current_round = None
     self.previous_action = None
@@ -352,6 +353,18 @@ def count_crates_in_blast(
     return sum(field[tile] == 1 for tile in get_blast_tiles(field, bomb_position))
 
 
+def bomb_hits_opponent(
+    game_state: dict,
+    bomb_position: tuple[int, int] | None = None,
+) -> bool:
+    """Return whether this bomb's current blast line contains an opponent."""
+    if bomb_position is None:
+        bomb_position = game_state["self"][3]
+
+    blast_tiles = set(get_blast_tiles(game_state["field"], bomb_position))
+    return any(other[3] in blast_tiles for other in game_state["others"])
+
+
 def can_escape_from_position(
     game_state: dict,
     bomb_position: tuple[int, int],
@@ -380,12 +393,19 @@ def can_escape_after_bomb(game_state: dict) -> bool:
 
 
 def bomb_status(game_state: dict) -> str:
-    """Classify BOMB without removing it from the action space."""
+    """Classify BOMB without removing it from the action space.
+
+    ATTACK takes precedence over the crate classes, but never over UNSAFE.
+    Thus a tactically useful bomb is not mislabeled USELESS merely because it
+    currently destroys no crate.
+    """
     _, _, bombs_left, position = game_state["self"]
     if not bombs_left:
         return BOMB_UNAVAILABLE
     if not can_escape_after_bomb(game_state):
         return BOMB_UNSAFE
+    if bomb_hits_opponent(game_state, position):
+        return BOMB_ATTACK
     crates_in_blast = count_crates_in_blast(game_state["field"], position)
     if crates_in_blast == 0:
         return BOMB_USELESS
