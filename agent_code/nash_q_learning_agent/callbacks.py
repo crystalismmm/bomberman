@@ -35,7 +35,7 @@ BOMBING_DISTANCE_DECAY = 0.85
 EPSILON_EVAL = 0.0
 RNG_SEED = 0
 
-MODEL_VERSION = 2
+MODEL_VERSION = 3
 MODEL_FILE = Path(__file__).resolve().with_name("nash_q_table.pkl")
 
 TARGET_ESCAPE = "ESCAPE"
@@ -126,17 +126,15 @@ def act(self, game_state: dict) -> str:
         opponent_name = "NONE"
         opponent_relevance = 0.0
 
-        own_strategy = np.ones(len(ACTIONS), dtype=np.float32) / len(ACTIONS)
-
-        opponent_strategy = own_strategy.copy()
-        equilibrium_value = 0.0
+        own_strategy, equilibrium_value = solve_single_agent_state(q_matrix)
+        opponent_strategy = np.ones(len(ACTIONS), dtype=np.float32) / len(ACTIONS)
 
         if self.rng.random() < epsilon:
             decision_type = "exploration"
             action = str(self.rng.choice(ACTIONS))
         else:
             decision_type = "no-opponent"
-            action = str(np.argmax(np.mean(q_matrix, axis=1)))
+            action = str(self.rng.choice(ACTIONS, p=own_strategy))
 
     else:
         opponent_name = opponent[0]
@@ -219,9 +217,29 @@ def solve_zero_sum_game(q_matrix: np.ndarray)-> tuple[np.ndarray, np.ndarray, fl
     """
     matrix = np.asarray(q_matrix, dtype=np.float64)
 
+    if not np.any(matrix):
+        uniform_strategy = np.ones(len(ACTIONS), dtype=np.float32) / len(ACTIONS)
+
+        return uniform_strategy, uniform_strategy.copy(), 0.0
+
     row_strategy, column_strategy, value = solve_zero_sum_game_by_support_enumeration(matrix)
 
     return row_strategy.astype(np.float32), column_strategy.astype(np.float32), float(value)
+
+
+def solve_single_agent_state(q_matrix: np.ndarray)-> tuple[np.ndarray, float]:
+    """Return a tie-aware greedy strategy when no opponent remains."""
+    matrix = np.asarray(q_matrix, dtype=np.float64)
+
+    row_values = np.mean(matrix, axis=1)
+    best_value = float(np.max(row_values))
+
+    best_rows = np.flatnonzero(np.isclose(row_values, best_value))
+
+    strategy = np.zeros(len(ACTIONS), dtype=np.float32)
+    strategy[best_rows] = 1.0 / len(best_rows)
+
+    return strategy, best_value
 
 
 def solve_zero_sum_game_by_support_enumeration(q_matrix: np.ndarray)-> tuple[np.ndarray, np.ndarray, float]:

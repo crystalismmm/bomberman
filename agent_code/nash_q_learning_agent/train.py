@@ -26,6 +26,7 @@ from .callbacks import (
     most_relevant_opponent,
     q_matrix_for_state,
     reachable_positions,
+    solve_single_agent_state,
     solve_zero_sum_game,
     state_to_key
 )
@@ -60,7 +61,7 @@ LEARNING_RATE = 0.10
 DISCOUNT_FACTOR = 0.90
 EPSILON_START = 0.20
 EPSILON_MIN = 0.01
-EPSILON_DECAY = 0.995
+EPSILON_DECAY = 0.9995
 
 
 def setup_training(self):
@@ -245,18 +246,15 @@ def update_nash_q_table(self, old_game_state: dict, action: str, new_game_state:
     opponent = most_relevant_opponent(old_game_state)
 
     if opponent is None:
-        return
-
-    opponent_name = opponent[0]
-
-    opponent_action = infer_opponent_action(old_game_state, new_game_state, opponent_name)
+        opponent_name = "NONE"
+        opponent_action = None
+    else:
+        opponent_name = opponent[0]
+        opponent_action = infer_opponent_action(old_game_state, new_game_state, opponent_name)
 
     my_action_index = ACTIONS.index(action)
-    opponent_action_index = ACTIONS.index(opponent_action)
 
     old_matrix = table_entry(self.q_table, old_key)
-
-    old_q_value = float(old_matrix[my_action_index, opponent_action_index])
 
     if new_game_state is None:
         future_value = 0.0
@@ -268,30 +266,44 @@ def update_nash_q_table(self, old_game_state: dict, action: str, new_game_state:
 
         new_matrix = q_matrix_for_state(self.q_table, new_key)
 
-        _, _, future_value = solve_zero_sum_game(new_matrix)
+        if new_game_state["others"]:
+            _, _, future_value = solve_zero_sum_game(new_matrix)
+        else:
+            _, future_value = solve_single_agent_state(new_matrix)
 
     td_target = reward + DISCOUNT_FACTOR * future_value
 
-    td_error = td_target - old_q_value
+    if opponent_action in ACTIONS:
+        opponent_action_indices = np.array([ACTIONS.index(opponent_action)])
+        update_weights = np.array([1.0], dtype=np.float32)
+        opponent_action_label = opponent_action
+    else:
+        opponent_action_indices = np.arange(len(ACTIONS))
+        update_weights = np.full(len(ACTIONS), 1.0 / len(ACTIONS), dtype=np.float32)
+        opponent_action_label = "UNKNOWN"
 
-    old_matrix[my_action_index, opponent_action_index] += LEARNING_RATE * td_error
+    old_q_values = old_matrix[my_action_index, opponent_action_indices].copy()
+
+    td_errors = td_target - old_q_values
+
+    old_matrix[my_action_index, opponent_action_indices] += LEARNING_RATE * update_weights * td_errors
+
+    new_q_values = old_matrix[my_action_index, opponent_action_indices]
 
     self.logger.debug(
-        "Updated state %s, joint action (%s, %s): "
-        "old Q = %.3f, new Q = %.3f, reward = %.3f, "
-        "Nash future value = %.3f, TD target = %.3f, TD error = %.3f",
+        "Updated state %s, action (%s, %s) against %s: "
+        "old Q = %s, new Q = %s, reward = %.3f, "
+        "future value = %.3f, TD target = %.3f, TD error = %s",
         old_key,
         action,
-        opponent_action,
-        old_q_value,
-        old_matrix[
-            my_action_index,
-            opponent_action_index
-        ],
+        opponent_action_label,
+        opponent_name,
+        np.round(old_q_values, 3).tolist(),
+        np.round(new_q_values, 3).tolist(),
         reward,
         future_value,
         td_target,
-        td_error
+        np.round(td_errors, 3).tolist()
     )
 
 
