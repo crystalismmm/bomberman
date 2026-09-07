@@ -1,0 +1,4 @@
+﻿"Path","Algorithm","Hash"
+"C:\Users\konst\Documents\University\bomberman\agent_code\q_learning_advanced_v10_agent\model.npy","SHA256","8DFE6728B184C87F7430169C9FC0BDEBCE4B6DBCEEC140B50D63D6CFF98B66EA"
+"C:\Users\konst\Documents\University\bomberman\agent_code\q_learning_tabular_v3_agent\q_table.pkl","SHA256","E942953E64AB421A8A06319BCA16FA20FF6F5178916D0D7C8C2A531E3A7A3A44"
+"C:\Users\konst\Documents\University\bomberman\agent_code\nash_q_learning_v5_agent\nash_q_table.pkl","SHA256","C4BB919EA3C65FDD434E1169B873EC2BAB6DE977948ED8BC4157A55A93B3B4D3"
